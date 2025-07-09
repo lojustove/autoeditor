@@ -60,7 +60,7 @@ const App = () => {
     const [musicUrl, setMusicUrl] = useState<string>('');
 
     // Settings states
-    const [duration, setDuration] = useState<number>(7);
+    const [narrationDuration, setNarrationDuration] = useState<number>(0);
     const [zoomEffect, setZoomEffect] = useState<ZoomEffect>('zoom-in');
     const [musicVolume, setMusicVolume] = useState<number>(0.5);
     
@@ -75,10 +75,10 @@ const App = () => {
     const audioRef = useRef<HTMLAudioElement>(null);
     const musicRef = useRef<HTMLAudioElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
-    const imageIntervalRef = useRef<number | null>(null);
     const animationFrameRef = useRef<number | null>(null);
 
-    const isReadyForPreview = imageUrls.length > 0 && audioUrl;
+    const imageDuration = narrationDuration > 0 && images.length > 0 ? narrationDuration / images.length : 7;
+    const isReadyForPreview = imageUrls.length > 0 && audioUrl && narrationDuration > 0;
 
     // Effect to create/revoke object URLs
     useEffect(() => {
@@ -102,11 +102,17 @@ const App = () => {
     }, [music]);
 
     const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files) setImages(Array.from(e.target.files));
+        if (e.target.files) {
+            const shuffled = Array.from(e.target.files).sort(() => Math.random() - 0.5);
+            setImages(shuffled);
+        }
     };
 
     const handleAudioUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files[0]) setAudio(e.target.files[0]);
+        if (e.target.files && e.target.files[0]) {
+            setAudio(e.target.files[0]);
+            setNarrationDuration(0);
+        }
     };
 
     const handleMusicUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -126,8 +132,6 @@ const App = () => {
     };
     
     const stopPreview = useCallback(() => {
-        if (imageIntervalRef.current) clearInterval(imageIntervalRef.current);
-        imageIntervalRef.current = null;
         if (audioRef.current) {
             audioRef.current.pause();
             audioRef.current.currentTime = 0;
@@ -154,10 +158,6 @@ const App = () => {
         if (musicRef.current) {
              musicRef.current.play().catch(console.error);
         }
-
-        imageIntervalRef.current = window.setInterval(() => {
-            setCurrentImageIndex(prevIndex => (prevIndex + 1) % images.length);
-        }, duration * 1000);
     };
 
     useEffect(() => {
@@ -171,7 +171,7 @@ const App = () => {
         setMusic(null);
         setSubtitles([]);
         setSrtFileName('');
-        setDuration(7);
+        setNarrationDuration(0);
         setZoomEffect('zoom-in');
         setMusicVolume(0.5);
     };
@@ -181,10 +181,18 @@ const App = () => {
         if (!audioEl || !isPreviewing) return;
         
         const handleTimeUpdate = () => {
+            const currentTime = audioEl.currentTime;
             const subtitle = subtitles.find(s => 
-                audioEl.currentTime >= s.start && audioEl.currentTime <= s.end
+                currentTime >= s.start && currentTime <= s.end
             );
             setCurrentSubtitle(subtitle ? subtitle.text : '');
+
+            if (images.length > 0 && imageDuration > 0) {
+                const newIndex = Math.floor(currentTime / imageDuration) % images.length;
+                if (newIndex !== currentImageIndex) {
+                    setCurrentImageIndex(newIndex);
+                }
+            }
         };
 
         const handleAudioEnd = () => stopPreview();
@@ -196,7 +204,8 @@ const App = () => {
             audioEl.removeEventListener('timeupdate', handleTimeUpdate);
             audioEl.removeEventListener('ended', handleAudioEnd);
         };
-    }, [subtitles, stopPreview, isPreviewing]);
+    }, [subtitles, stopPreview, isPreviewing, images.length, imageDuration]);
+
 
     const drawCanvasFrame = useCallback((ctx, currentTime, imageElements) => {
         const { width, height } = ctx.canvas;
@@ -204,12 +213,14 @@ const App = () => {
         ctx.fillStyle = 'black';
         ctx.fillRect(0, 0, width, height);
 
-        const imageIndex = Math.floor(currentTime / duration) % imageElements.length;
+        if(imageElements.length === 0) return;
+
+        const imageIndex = Math.floor(currentTime / imageDuration) % imageElements.length;
         const img = imageElements[imageIndex];
         if (!img) return;
         
-        const timeInImage = currentTime % duration;
-        const progress = timeInImage / duration;
+        const timeInImage = currentTime % imageDuration;
+        const progress = timeInImage / imageDuration;
         
         let scale = 1.0, dx = 0, dy = 0;
         switch (zoomEffect) {
@@ -268,7 +279,7 @@ const App = () => {
             const startY = height - (lines.length * lineHeight) - (height * 0.05);
             lines.forEach((l, i) => ctx.fillText(l.trim(), width / 2, startY + i * lineHeight));
         }
-    }, [duration, zoomEffect, subtitles]);
+    }, [imageDuration, zoomEffect, subtitles]);
     
     const handleExport = async () => {
         if (!isReadyForPreview || !canvasRef.current || !audioRef.current) return;
@@ -313,7 +324,7 @@ const App = () => {
         ]);
 
         const chunks: Blob[] = [];
-        const recorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm; codecs=vp9,opus' });
+        const recorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm; codecs=vp8,opus' });
 
         recorder.ondataavailable = e => e.data.size > 0 && chunks.push(e.data);
         recorder.onstop = () => {
@@ -356,12 +367,12 @@ const App = () => {
                 animationFrameRef.current = requestAnimationFrame(render);
             } else {
                 if (recorder.state === 'recording') {
-                    setExportProgress(100);
                     recorder.stop();
                 }
                 if (audioEl) audioEl.pause();
                 if (musicEl) musicEl.pause();
                 if(animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+                setExportProgress(100);
             }
         };
         animationFrameRef.current = requestAnimationFrame(render);
@@ -378,7 +389,7 @@ const App = () => {
                     <h2 className="card-header">1. Cargar Archivos</h2>
                     <div className="file-input-group">
                         <label htmlFor="image-upload" className="file-input-wrapper">
-                            <span>{images.length > 0 ? `${images.length} imágenes cargadas` : 'Seleccionar Imágenes'}</span>
+                            <span>{images.length > 0 ? `${images.length} imágenes cargadas (orden aleatorio)` : 'Seleccionar Imágenes'}</span>
                             <input id="image-upload" type="file" accept="image/*" multiple onChange={handleImageUpload} disabled={isExporting} />
                         </label>
                         <label htmlFor="audio-upload" className="file-input-wrapper">
@@ -400,8 +411,13 @@ const App = () => {
                     <h2 className="card-header">2. Configuración</h2>
                     <div className="settings-grid">
                         <div className="setting">
-                            <label htmlFor="duration">Duración por imagen (segundos):</label>
-                            <input id="duration" type="number" value={duration} onChange={e => setDuration(Number(e.target.value))} min="1" max="30" disabled={isExporting} />
+                            <label>Duración por Imagen:</label>
+                             <p className="setting-value">
+                                {isReadyForPreview
+                                    ? `${imageDuration.toFixed(2)} segundos (auto)`
+                                    : 'N/A'
+                                }
+                            </p>
                         </div>
                         <div className="setting">
                             <label htmlFor="zoom-effect">Efecto Visual:</label>
@@ -453,16 +469,16 @@ const App = () => {
                     {!isReadyForPreview && <span>Sube imágenes y audio de narración para comenzar.</span>}
                     {isReadyForPreview && imageUrls.map((url, index) => (
                         <img
-                            key={index}
+                            key={images[index].name}
                             src={url}
                             alt={`Vista previa de imagen ${index + 1}`}
                             className={`preview-image ${index === currentImageIndex ? `active ${isPreviewing ? zoomEffect : ''}` : ''}`}
-                            style={isPreviewing ? { animationDuration: `${duration}s` } : {}}
+                            style={isPreviewing ? { animationDuration: `${imageDuration}s` } : {}}
                         />
                     ))}
                     {currentSubtitle && <div className="subtitles">{currentSubtitle}</div>}
                 </div>
-                {audioUrl && <audio ref={audioRef} src={audioUrl} />}
+                {audioUrl && <audio ref={audioRef} src={audioUrl} onLoadedMetadata={e => setNarrationDuration(e.currentTarget.duration)} />}
                 {musicUrl && <audio ref={musicRef} src={musicUrl} loop />}
                 <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
             </div>
